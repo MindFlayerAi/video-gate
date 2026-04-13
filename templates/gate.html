@@ -23,7 +23,7 @@
 
   .card { width:100%; max-width:440px; animation:fadeUp .6s ease-out; }
   .bar { height:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent); border-radius:2px; margin-bottom:40px; }
-  .logo { max-width:100%; height:auto; margin-bottom:24px; }
+  .logo { max-width:300px; height:auto; margin-bottom:24px; display:block; margin-left:auto; margin-right:auto; }
   h1 { font-family:'Playfair Display',serif; font-size:28px; font-weight:800; margin-bottom:8px; }
   .sub { color:var(--text-muted); font-size:15px; margin-bottom:32px; line-height:1.5; }
   input {
@@ -64,7 +64,7 @@
   <img src="{{ logo_url }}" alt="Logo" class="logo">
   {% endif %}
   <h1>{{ video.title }}</h1>
-  <p class="sub">This content is for members only. Enter your email to access.</p>
+  <p class="sub">To access the Exclusive Content please enter your Patreon account email.</p>
 
   <div id="form-area">
     <p class="err-msg" id="err">Email not found. Contact the creator for access.</p>
