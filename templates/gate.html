@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ video.title }} — Video Gate</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0e13; --surface: #14171e; --border: #252a36;
+    --accent: #6c5ce7; --accent-glow: rgba(108,92,231,.25);
+    --danger: #e74c5c; --success: #2ed573; --success-glow: rgba(46,213,115,.15);
+    --text: #e8e6f0; --text-muted: #8a8699;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    min-height:100vh; background:var(--bg); display:flex;
+    align-items:center; justify-content:center;
+    font-family:'DM Sans',sans-serif; color:var(--text); padding:24px;
+  }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
+
+  .card { width:100%; max-width:440px; animation:fadeUp .6s ease-out; }
+  .bar { height:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent); border-radius:2px; margin-bottom:40px; }
+  .logo { max-width:100%; height:auto; margin-bottom:24px; }
+  h1 { font-family:'Playfair Display',serif; font-size:28px; font-weight:800; margin-bottom:8px; }
+  .sub { color:var(--text-muted); font-size:15px; margin-bottom:32px; line-height:1.5; }
+  input {
+    width:100%; padding:12px 16px; border-radius:10px;
+    border:1px solid var(--border); background:var(--bg);
+    color:var(--text); font-size:15px; font-family:inherit;
+    outline:none; transition:border .2s; margin-bottom:16px;
+  }
+  input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
+  input.error { border-color:var(--danger); }
+  button {
+    width:100%; padding:12px; border-radius:10px; border:none;
+    background:var(--accent); color:#fff; font-size:15px;
+    font-weight:600; cursor:pointer; font-family:inherit;
+    transition:all .2s; box-shadow:0 4px 20px var(--accent-glow);
+  }
+  button:hover { transform:translateY(-1px); }
+  button:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+  .err-msg { color:var(--danger); font-size:13px; margin:-8px 0 12px 2px; display:none; }
+  .err-msg.show { display:block; animation:fadeUp .3s ease-out; }
+
+  .success-box {
+    padding:24px; border-radius:14px; background:var(--success-glow);
+    border:1px solid rgba(46,213,115,.25); text-align:center;
+    animation:fadeUp .4s ease-out; display:none;
+  }
+  .success-box .check { font-size:36px; margin-bottom:8px; }
+  .success-box p { color:var(--success); font-weight:600; font-size:16px; }
+
+  .shake { animation:shake .4s ease; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="bar"></div>
+  {% if logo_url %}
+  <img src="{{ logo_url }}" alt="Logo" class="logo">
+  {% endif %}
+  <h1>{{ video.title }}</h1>
+  <p class="sub">This content is for members only. Enter your email to access.</p>
+
+  <div id="form-area">
+    <p class="err-msg" id="err">Email not found. Contact the creator for access.</p>
+    <input type="email" id="email" placeholder="you@email.com" autofocus>
+    <button id="btn" onclick="verify()">Verify &amp; Watch</button>
+  </div>
+
+  <div class="success-box" id="success">
+    <div class="check">✓</div>
+    <p>Access granted — redirecting…</p>
+  </div>
+</div>
+
+<script>
+const VIDEO_ID = "{{ video.id }}";
+const emailInput = document.getElementById('email');
+const err = document.getElementById('err');
+const btn = document.getElementById('btn');
+const formArea = document.getElementById('form-area');
+const success = document.getElementById('success');
+
+emailInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') verify();
+  err.classList.remove('show');
+  emailInput.classList.remove('error');
+});
+
+async function verify() {
+  const email = emailInput.value.trim();
+  if (!email) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Verifying…';
+
+  try {
+    const res = await fetch('/api/verify', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({email, video_id: VIDEO_ID})
+    });
+    const data = await res.json();
+
+    if (data.granted) {
+      formArea.style.display = 'none';
+      success.style.display = 'block';
+      setTimeout(() => {
+        window.location.href = data.redirect_url;
+      }, 1200);
+    } else {
+      err.classList.add('show');
+      emailInput.classList.add('error');
+      emailInput.parentElement.classList.add('shake');
+      setTimeout(() => emailInput.parentElement.classList.remove('shake'), 500);
+      btn.disabled = false;
+      btn.textContent = 'Verify & Watch';
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Verify & Watch';
+  }
+}
+</script>
+</body>
+</html>

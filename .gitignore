@@ -1,0 +1,4 @@
+.env
+gate.db
+__pycache__/
+uploads/

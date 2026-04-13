@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Video Gate — Admin Login</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0e13; --surface: #14171e; --border: #252a36;
+    --accent: #6c5ce7; --accent-glow: rgba(108,92,231,.25);
+    --accent-soft: #8b7cf7; --danger: #e74c5c;
+    --text: #e8e6f0; --text-muted: #8a8699; --text-dim: #5a566b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    min-height:100vh; background:var(--bg); display:flex;
+    align-items:center; justify-content:center;
+    font-family:'DM Sans',sans-serif; color:var(--text); padding:24px;
+  }
+  .card {
+    width:100%; max-width:400px;
+    animation: fadeUp .6s ease-out;
+  }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+  .bar { height:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent); border-radius:2px; margin-bottom:40px; }
+  h1 { font-family:'Playfair Display',serif; font-size:28px; font-weight:800; margin-bottom:6px; }
+  .sub { color:var(--text-muted); font-size:15px; margin-bottom:28px; }
+  input {
+    width:100%; padding:12px 16px; border-radius:10px;
+    border:1px solid var(--border); background:var(--bg);
+    color:var(--text); font-size:15px; font-family:inherit;
+    outline:none; transition:border .2s; margin-bottom:16px;
+  }
+  input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
+  button {
+    width:100%; padding:12px; border-radius:10px; border:none;
+    background:var(--accent); color:#fff; font-size:15px;
+    font-weight:600; cursor:pointer; font-family:inherit;
+    transition:all .2s; box-shadow:0 4px 20px var(--accent-glow);
+  }
+  button:hover { transform:translateY(-1px); }
+  .error { color:var(--danger); font-size:13px; margin-bottom:12px; display:none; }
+  .error.show { display:block; animation: fadeUp .3s ease-out; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="bar"></div>
+  <h1>Video Gate</h1>
+  <p class="sub">Enter admin password to continue.</p>
+  <p class="error" id="err">Incorrect password.</p>
+  <input type="password" id="pw" placeholder="Admin password" autofocus>
+  <button onclick="login()">Sign In</button>
+</div>
+<script>
+const pw = document.getElementById('pw');
+const err = document.getElementById('err');
+
+pw.addEventListener('keydown', e => { if(e.key==='Enter') login(); });
+
+async function login() {
+  err.classList.remove('show');
+  const res = await fetch('/admin/login', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({password: pw.value})
+  });
+  if (res.ok) {
+    window.location.href = '/admin';
+  } else {
+    err.classList.add('show');
+    pw.style.borderColor = 'var(--danger)';
+    pw.focus();
+  }
+}
+</script>
+</body>
+</html>

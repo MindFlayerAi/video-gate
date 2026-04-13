@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Video Gate — Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0e13; --surface: #14171e; --surface-hover: #1a1e28;
+    --border: #252a36; --accent: #6c5ce7; --accent-glow: rgba(108,92,231,.25);
+    --accent-soft: #8b7cf7; --danger: #e74c5c; --danger-glow: rgba(231,76,92,.2);
+    --success: #2ed573; --success-glow: rgba(46,213,115,.15);
+    --text: #e8e6f0; --text-muted: #8a8699; --text-dim: #5a566b;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    min-height:100vh; background:var(--bg);
+    font-family:'DM Sans',sans-serif; color:var(--text); padding:40px 24px;
+  }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes slideIn { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+
+  .wrap { max-width:700px; margin:0 auto; animation:fadeUp .5s ease-out; }
+
+  /* Header */
+  .header-dot { width:10px; height:10px; border-radius:50%; background:var(--accent); box-shadow:0 0 12px var(--accent-glow); display:inline-block; vertical-align:middle; margin-right:10px; }
+  .header-label { font-size:12px; font-weight:600; color:var(--text-muted); letter-spacing:2px; text-transform:uppercase; }
+  h1 {
+    font-family:'Playfair Display',serif; font-size:34px; font-weight:800;
+    margin:6px 0; background:linear-gradient(135deg,var(--text),var(--accent-soft));
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  .subtitle { color:var(--text-muted); font-size:15px; margin-bottom:8px; }
+  .logout { color:var(--text-dim); font-size:13px; text-decoration:none; border:1px solid var(--border); padding:6px 14px; border-radius:8px; transition:all .2s; }
+  .logout:hover { color:var(--text); border-color:var(--text-muted); }
+  .header-row { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:32px; }
+
+  /* Tabs */
+  .tabs { display:flex; gap:10px; margin-bottom:28px; }
+  .tab {
+    padding:10px 20px; border-radius:10px; border:1px solid var(--border);
+    background:transparent; color:var(--text-muted); font-size:14px;
+    font-weight:600; cursor:pointer; font-family:inherit; transition:all .2s;
+  }
+  .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .tab .count {
+    margin-left:8px; font-size:11px; opacity:.7;
+    background:var(--bg); padding:2px 8px; border-radius:10px;
+  }
+  .tab.active .count { background:rgba(255,255,255,.2); }
+
+  /* Forms */
+  .form-card {
+    background:var(--surface); border-radius:16px; padding:24px;
+    border:1px solid var(--border); margin-bottom:24px;
+  }
+  .form-card h3 { font-size:15px; font-weight:600; margin-bottom:16px; }
+  input[type="text"], input[type="email"], input[type="url"] {
+    width:100%; padding:12px 16px; border-radius:10px;
+    border:1px solid var(--border); background:var(--bg);
+    color:var(--text); font-size:15px; font-family:inherit;
+    outline:none; transition:border .2s; margin-bottom:10px;
+  }
+  input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
+
+  /* Buttons */
+  .btn {
+    padding:11px 22px; border-radius:10px; border:none; font-size:14px;
+    font-weight:600; cursor:pointer; font-family:inherit; transition:all .2s;
+  }
+  .btn-primary { background:var(--accent); color:#fff; box-shadow:0 4px 20px var(--accent-glow); }
+  .btn-primary:hover { transform:translateY(-1px); }
+  .btn-outline { background:transparent; color:var(--text-muted); border:1px solid var(--border); }
+  .btn-danger { background:transparent; color:var(--danger); border:1px solid rgba(231,76,92,.25); padding:6px 14px; font-size:12px; }
+  .btn-danger:hover { background:var(--danger-glow); }
+  .btn-sm { padding:6px 14px; font-size:12px; }
+
+  /* List */
+  .list { border-radius:16px; border:1px solid var(--border); overflow:hidden; }
+  .row {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 20px; background:var(--surface);
+    border-bottom:1px solid var(--border); transition:background .15s; gap:12px;
+  }
+  .row:last-child { border-bottom:none; }
+  .row:hover { background:var(--surface-hover); }
+  .row-title { font-weight:600; font-size:15px; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row-sub { font-size:12px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row-actions { display:flex; gap:8px; align-items:center; flex-shrink:0; }
+
+  /* Gate link box */
+  .gate-link {
+    display:flex; align-items:center; gap:8px; background:var(--bg);
+    padding:6px 12px; border-radius:8px; font-size:12px; color:var(--accent-soft);
+    cursor:pointer; transition:all .2s; border:1px solid var(--border);
+  }
+  .gate-link:hover { border-color:var(--accent); }
+  .gate-link .copied { color:var(--success); }
+
+  /* Info box */
+  .info {
+    margin-top:20px; padding:20px; border-radius:14px;
+    background:var(--surface); border:1px solid var(--border);
+  }
+  .info h4 { font-size:14px; font-weight:600; color:var(--text-muted); margin-bottom:8px; }
+  .info p { font-size:13px; color:var(--text-dim); line-height:1.7; }
+  .info code {
+    background:var(--bg); padding:2px 8px; border-radius:6px;
+    font-size:12px; color:var(--accent-soft);
+  }
+
+  .empty { text-align:center; padding:48px 24px; color:var(--text-dim); font-size:14px; }
+
+  /* Toast */
+  .toast {
+    position:fixed; top:24px; right:24px; padding:12px 22px;
+    background:var(--surface); border:1px solid rgba(108,92,231,.25);
+    color:var(--accent-soft); border-radius:12px; font-size:13px;
+    font-weight:600; animation:slideIn .3s ease-out; z-index:99;
+    box-shadow:0 8px 30px rgba(0,0,0,.4);
+  }
+
+  .hidden { display:none; }
+
+  /* Email input row */
+  .email-row { display:flex; gap:10px; align-items:flex-end; }
+  .email-row > div { flex:1; }
+  .email-row label { display:block; font-size:13px; font-weight:600; color:var(--text-muted); margin-bottom:8px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <!-- Header -->
+  <div class="header-row">
+    <div>
+      <div style="margin-bottom:6px">
+        <span class="header-dot"></span>
+        <span class="header-label">Video Gate</span>
+      </div>
+      <h1>Admin Panel</h1>
+      <p class="subtitle">Manage your gated videos and approved members.</p>
+    </div>
+    <a href="/admin/logout" class="logout">Sign Out</a>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="videos" onclick="switchTab('videos')">
+      Videos <span class="count" id="video-count">0</span>
+    </button>
+    <button class="tab" data-tab="emails" onclick="switchTab('emails')">
+      Approved Emails <span class="count" id="email-count">0</span>
+    </button>
+  </div>
+
+  <!-- VIDEOS TAB -->
+  <div id="tab-videos">
+    <div class="form-card">
+      <h3>Add New Video</h3>
+      <input type="text" id="v-title" placeholder="Video title (e.g. Episode 12 — Behind the Scenes)">
+      <input type="url" id="v-url" placeholder="Video URL (Telegram, Proton, YouTube — any link)">
+      <button class="btn btn-primary" onclick="addVideo()">+ Add Video</button>
+    </div>
+    <div id="video-list"></div>
+    <div class="info" id="video-info" style="display:none">
+      <h4>How to use</h4>
+      <p>Copy a gate link and paste it on Patreon. When a member clicks it, they'll be asked
+      for their email. If they're on your approved list, they get redirected to the video.</p>
+    </div>
+  </div>
+
+  <!-- EMAILS TAB -->
+  <div id="tab-emails" class="hidden">
+    <div class="form-card">
+      <div class="email-row">
+        <div>
+          <label>Add approved email</label>
+          <input type="email" id="e-email" placeholder="patron@email.com">
+        </div>
+        <button class="btn btn-primary" style="margin-bottom:10px; white-space:nowrap" onclick="addEmail()">+ Add</button>
+      </div>
+    </div>
+    <div id="email-list"></div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast" class="toast hidden"></div>
+
+<script>
+const BASE = window.location.origin;
+let currentTab = 'videos';
+
+// ── Toast ──
+function flash(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 2200);
+}
+
+// ── Tab switching ──
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  document.getElementById('tab-videos').classList.toggle('hidden', tab !== 'videos');
+  document.getElementById('tab-emails').classList.toggle('hidden', tab !== 'emails');
+}
+
+// ── Copy to clipboard ──
+function copyLink(url, el) {
+  navigator.clipboard.writeText(url).then(() => {
+    el.innerHTML = '<span class="copied">✓ Copied!</span>';
+    setTimeout(() => { el.innerHTML = '📋 Copy link'; }, 1500);
+  });
+}
+
+// ═══ VIDEOS ═══
+async function loadVideos() {
+  const res = await fetch('/api/videos');
+  const videos = await res.json();
+  document.getElementById('video-count').textContent = videos.length;
+  document.getElementById('video-info').style.display = videos.length ? 'block' : 'none';
+
+  if (!videos.length) {
+    document.getElementById('video-list').innerHTML = '<div class="empty">No videos yet — add one above to get started.</div>';
+    return;
+  }
+
+  document.getElementById('video-list').innerHTML = '<div class="list">' + videos.map(v => `
+    <div class="row">
+      <div style="flex:1;min-width:0">
+        <div class="row-title">${esc(v.title)}</div>
+        <div class="row-sub">${esc(v.url)}</div>
+        <div style="margin-top:8px">
+          <span class="gate-link" onclick="copyLink('${BASE}/gate/${v.id}', this)">📋 Copy link</span>
+        </div>
+      </div>
+      <div class="row-actions">
+        <a href="/gate/${v.id}" target="_blank" class="btn btn-outline btn-sm">Preview</a>
+        <button class="btn btn-danger" onclick="deleteVideo('${v.id}')">Remove</button>
+      </div>
+    </div>
+  `).join('') + '</div>';
+}
+
+async function addVideo() {
+  const title = document.getElementById('v-title').value.trim();
+  const url = document.getElementById('v-url').value.trim();
+  if (!title || !url) return;
+  await fetch('/api/videos', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({title, url})
+  });
+  document.getElementById('v-title').value = '';
+  document.getElementById('v-url').value = '';
+  flash('Video added');
+  loadVideos();
+}
+
+async function deleteVideo(id) {
+  await fetch('/api/videos/' + id, {method:'DELETE'});
+  flash('Video removed');
+  loadVideos();
+}
+
+// ═══ EMAILS ═══
+async function loadEmails() {
+  const res = await fetch('/api/emails');
+  const emails = await res.json();
+  document.getElementById('email-count').textContent = emails.length;
+
+  if (!emails.length) {
+    document.getElementById('email-list').innerHTML = '<div class="empty">No emails yet — add approved members above.</div>';
+    return;
+  }
+
+  document.getElementById('email-list').innerHTML = '<div class="list">' + emails.map(e => `
+    <div class="row">
+      <span style="font-size:14px">${esc(e.email)}</span>
+      <button class="btn btn-danger" onclick="deleteEmail(${e.id})">Remove</button>
+    </div>
+  `).join('') + '</div>';
+}
+
+async function addEmail() {
+  const email = document.getElementById('e-email').value.trim();
+  if (!email) return;
+  const res = await fetch('/api/emails', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({email})
+  });
+  if (res.status === 409) { flash('Email already exists'); return; }
+  document.getElementById('e-email').value = '';
+  flash('Email added');
+  loadEmails();
+}
+
+async function deleteEmail(id) {
+  await fetch('/api/emails/' + id, {method:'DELETE'});
+  flash('Email removed');
+  loadEmails();
+}
+
+// ── Escape HTML ──
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Keyboard shortcuts ──
+document.getElementById('v-url').addEventListener('keydown', e => { if(e.key==='Enter') addVideo(); });
+document.getElementById('e-email').addEventListener('keydown', e => { if(e.key==='Enter') addEmail(); });
+
+// ── Init ──
+loadVideos();
+loadEmails();
+</script>
+</body>
+</html>
