@@ -112,6 +112,14 @@
 
   .empty { text-align:center; padding:48px 24px; color:var(--text-dim); font-size:14px; }
 
+  /* Source badges */
+  .badge {
+    display:inline-block; padding:2px 10px; border-radius:10px;
+    font-size:11px; font-weight:600; margin-left:10px;
+  }
+  .badge-patreon { background:rgba(232,91,70,.15); color:#e85b46; border:1px solid rgba(232,91,70,.25); }
+  .badge-manual { background:rgba(108,92,231,.15); color:var(--accent-soft); border:1px solid rgba(108,92,231,.25); }
+
   /* Toast */
   .toast {
     position:fixed; top:24px; right:24px; padding:12px 22px;
@@ -173,10 +181,21 @@
 
   <!-- EMAILS TAB -->
   <div id="tab-emails" class="hidden">
+    <!-- Patreon Sync Status -->
+    <div class="form-card" id="sync-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px">
+        <div>
+          <h3 style="margin-bottom:4px">Patreon Sync</h3>
+          <p id="sync-status" style="font-size:13px; color:var(--text-dim); margin:0">Checking...</p>
+        </div>
+        <button class="btn btn-primary" onclick="syncNow()" id="sync-btn" style="white-space:nowrap">Sync Now</button>
+      </div>
+    </div>
+
     <div class="form-card">
       <div class="email-row">
         <div>
-          <label>Add approved email</label>
+          <label>Add manual email (won't be removed by sync)</label>
           <input type="email" id="e-email" placeholder="patron@email.com">
         </div>
         <button class="btn btn-primary" style="margin-bottom:10px; white-space:nowrap" onclick="addEmail()">+ Add</button>
@@ -275,13 +294,16 @@ async function loadEmails() {
   document.getElementById('email-count').textContent = emails.length;
 
   if (!emails.length) {
-    document.getElementById('email-list').innerHTML = '<div class="empty">No emails yet — add approved members above.</div>';
+    document.getElementById('email-list').innerHTML = '<div class="empty">No emails yet — add approved members above or sync from Patreon.</div>';
     return;
   }
 
   document.getElementById('email-list').innerHTML = '<div class="list">' + emails.map(e => `
     <div class="row">
-      <span style="font-size:14px">${esc(e.email)}</span>
+      <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">
+        <span style="font-size:14px">${esc(e.email)}</span>
+        <span class="badge ${e.source === 'patreon' ? 'badge-patreon' : 'badge-manual'}">${e.source === 'patreon' ? 'Patreon' : 'Manual'}</span>
+      </div>
       <button class="btn btn-danger" onclick="deleteEmail(${e.id})">Remove</button>
     </div>
   `).join('') + '</div>';
@@ -306,6 +328,43 @@ async function deleteEmail(id) {
   loadEmails();
 }
 
+// ═══ PATREON SYNC ═══
+async function loadSyncStatus() {
+  try {
+    const res = await fetch('/api/sync/status');
+    const s = await res.json();
+    const el = document.getElementById('sync-status');
+    if (s.status === 'never') {
+      el.textContent = 'Not synced yet — click Sync Now to start.';
+    } else if (s.status === 'ok') {
+      el.innerHTML = `Last sync: <strong style="color:var(--success)">${s.time}</strong> — ${s.count} patron(s) found. ${s.detail}`;
+    } else {
+      el.innerHTML = `Last sync: <strong style="color:var(--danger)">Error</strong> — ${esc(s.detail)}`;
+    }
+  } catch(e) {}
+}
+
+async function syncNow() {
+  const btn = document.getElementById('sync-btn');
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+  try {
+    await fetch('/api/sync/now', {method:'POST'});
+    flash('Sync started');
+    // Poll for completion
+    setTimeout(async () => {
+      await loadSyncStatus();
+      await loadEmails();
+      btn.disabled = false;
+      btn.textContent = 'Sync Now';
+    }, 5000);
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'Sync Now';
+    flash('Sync failed');
+  }
+}
+
 // ── Escape HTML ──
 function esc(s) {
   const d = document.createElement('div');
@@ -320,6 +379,7 @@ document.getElementById('e-email').addEventListener('keydown', e => { if(e.key==
 // ── Init ──
 loadVideos();
 loadEmails();
+loadSyncStatus();
 </script>
 </body>
 </html>

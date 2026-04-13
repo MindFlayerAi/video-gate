@@ -20,8 +20,13 @@ import json
 import sqlite3
 import hashlib
 import secrets
+import threading
+import time
+import logging
 from pathlib import Path
 from functools import wraps
+from urllib.parse import urlencode
+import requests as http_requests
 from flask import (
     Flask, request, jsonify, redirect, render_template,
     session, url_for, g
@@ -47,6 +52,9 @@ app.secret_key = os.environ.get("SECRET_KEY", "change-this-to-a-random-string")
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "changeme")
 LOGO_URL = os.environ.get("LOGO_URL", "")
+PATREON_ACCESS_TOKEN = os.environ.get("PATREON_ACCESS_TOKEN", "")
+PATREON_TIER_NAME = os.environ.get("PATREON_TIER_NAME", "Premium")
+PATREON_SYNC_INTERVAL = int(os.environ.get("PATREON_SYNC_INTERVAL", "600"))  # seconds
 DATABASE = os.path.join(os.path.dirname(__file__), "gate.db")
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -74,6 +82,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS emails (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE NOT NULL,
+            source TEXT DEFAULT 'manual',
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -85,6 +94,11 @@ def init_db():
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Add source column if upgrading from older version
+    try:
+        db.execute("ALTER TABLE emails ADD COLUMN source TEXT DEFAULT 'manual'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     db.commit()
     db.close()
 
@@ -137,7 +151,7 @@ def admin_panel():
 @admin_required
 def list_emails():
     db = get_db()
-    rows = db.execute("SELECT id, email, added_at FROM emails ORDER BY added_at DESC").fetchall()
+    rows = db.execute("SELECT id, email, source, added_at FROM emails ORDER BY added_at DESC").fetchall()
     return jsonify([dict(r) for r in rows])
 
 
@@ -292,8 +306,220 @@ def index():
     return redirect(url_for("admin_login"))
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Patreon Sync
+# ═══════════════════════════════════════════════════════════════════
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("patreon-sync")
+
+PATREON_API = "https://www.patreon.com/api/oauth2/v2"
+
+last_sync_status = {"time": None, "status": "never", "detail": "", "count": 0}
+
+
+def patreon_get(path, params=None):
+    """Make an authenticated GET to the Patreon API v2."""
+    headers = {"Authorization": f"Bearer {PATREON_ACCESS_TOKEN}"}
+    url = f"{PATREON_API}{path}"
+    if params:
+        url += "?" + urlencode(params, safe="[](),")
+    r = http_requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def get_campaign_id():
+    """Fetch the creator's campaign ID."""
+    data = patreon_get("/campaigns", {"fields[campaign]": "created_at"})
+    campaigns = data.get("data", [])
+    if not campaigns:
+        raise Exception("No campaigns found for this access token")
+    return campaigns[0]["id"]
+
+
+def get_tier_id(campaign_id, tier_name):
+    """Find the tier ID matching the given name."""
+    data = patreon_get(f"/campaigns/{campaign_id}", {
+        "include": "tiers",
+        "fields[tier]": "title,amount_cents",
+    })
+    tiers = data.get("included", [])
+    matching = []
+    for t in tiers:
+        if t.get("type") == "tier":
+            title = t.get("attributes", {}).get("title", "")
+            if title.lower() == tier_name.lower():
+                matching.append(t["id"])
+    return matching
+
+
+def fetch_patron_emails(campaign_id, tier_ids):
+    """Fetch emails of active patrons in the specified tiers."""
+    emails = set()
+    cursor = None
+
+    while True:
+        params = {
+            "include": "currently_entitled_tiers,user",
+            "fields[member]": "email,patron_status,full_name",
+            "fields[tier]": "title",
+            "fields[user]": "email",
+            "page[count]": "100",
+        }
+        if cursor:
+            params["page[cursor]"] = cursor
+
+        data = patreon_get(f"/campaigns/{campaign_id}/members", params)
+        members = data.get("data", [])
+
+        # Build lookup of included resources
+        included = {}
+        for inc in data.get("included", []):
+            included[(inc["type"], inc["id"])] = inc
+
+        for member in members:
+            attrs = member.get("attributes", {})
+            status = attrs.get("patron_status")
+
+            # Only active patrons
+            if status != "active_patron":
+                continue
+
+            # Check if they're in one of the target tiers
+            entitled = member.get("relationships", {}).get(
+                "currently_entitled_tiers", {}
+            ).get("data", [])
+            member_tier_ids = [t["id"] for t in entitled]
+
+            if not tier_ids or any(tid in tier_ids for tid in member_tier_ids):
+                # Get email from member attributes first, fall back to user
+                email = attrs.get("email")
+                if not email:
+                    user_rel = member.get("relationships", {}).get("user", {}).get("data")
+                    if user_rel:
+                        user = included.get(("user", user_rel["id"]))
+                        if user:
+                            email = user.get("attributes", {}).get("email")
+                if email:
+                    emails.add(email.strip().lower())
+
+        # Pagination
+        cursors = data.get("meta", {}).get("pagination", {}).get("cursors")
+        if cursors and cursors.get("next"):
+            cursor = cursors["next"]
+        else:
+            break
+
+    return emails
+
+
+def sync_patreon_emails():
+    """Main sync function — fetches Patreon patrons and updates the DB."""
+    global last_sync_status
+    try:
+        log.info("Starting Patreon sync...")
+
+        campaign_id = get_campaign_id()
+        tier_ids = get_tier_id(campaign_id, PATREON_TIER_NAME)
+
+        if not tier_ids:
+            log.warning(f"No tier found matching '{PATREON_TIER_NAME}'. "
+                       f"Will sync ALL active patrons.")
+
+        patron_emails = fetch_patron_emails(campaign_id, tier_ids)
+        log.info(f"Found {len(patron_emails)} active patron(s) in '{PATREON_TIER_NAME}' tier")
+
+        db = sqlite3.connect(DATABASE)
+        db.row_factory = sqlite3.Row
+
+        # Get current patreon-synced emails
+        existing = set(
+            row["email"] for row in
+            db.execute("SELECT email FROM emails WHERE source = 'patreon'").fetchall()
+        )
+
+        # Add new patrons
+        added = 0
+        for email in patron_emails:
+            if email not in existing:
+                try:
+                    db.execute(
+                        "INSERT INTO emails (email, source) VALUES (?, 'patreon')",
+                        (email,)
+                    )
+                    added += 1
+                except sqlite3.IntegrityError:
+                    # Email exists as manual — leave it alone
+                    pass
+
+        # Remove former patrons (only patreon-sourced, not manual)
+        removed = 0
+        for email in existing:
+            if email not in patron_emails:
+                db.execute(
+                    "DELETE FROM emails WHERE email = ? AND source = 'patreon'",
+                    (email,)
+                )
+                removed += 1
+
+        db.commit()
+        db.close()
+
+        last_sync_status = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+            "status": "ok",
+            "detail": f"Added {added}, removed {removed}",
+            "count": len(patron_emails),
+        }
+        log.info(f"Sync complete: {added} added, {removed} removed, "
+                f"{len(patron_emails)} total patrons")
+
+    except Exception as e:
+        last_sync_status = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+            "status": "error",
+            "detail": str(e),
+            "count": 0,
+        }
+        log.error(f"Patreon sync error: {e}")
+
+
+def sync_loop():
+    """Background loop that syncs every PATREON_SYNC_INTERVAL seconds."""
+    while True:
+        if PATREON_ACCESS_TOKEN:
+            sync_patreon_emails()
+        time.sleep(PATREON_SYNC_INTERVAL)
+
+
+# ── API: Sync status & manual trigger ─────────────────────────────
+@app.route("/api/sync/status")
+@admin_required
+def sync_status():
+    return jsonify(last_sync_status)
+
+
+@app.route("/api/sync/now", methods=["POST"])
+@admin_required
+def sync_now():
+    if not PATREON_ACCESS_TOKEN:
+        return jsonify({"error": "PATREON_ACCESS_TOKEN not set"}), 400
+    # Run sync in a thread so it doesn't block
+    threading.Thread(target=sync_patreon_emails, daemon=True).start()
+    return jsonify({"ok": True, "message": "Sync started"})
+
+
 # ─── Run ───────────────────────────────────────────────────────────
 init_db()
+
+# Start Patreon sync background thread
+if PATREON_ACCESS_TOKEN:
+    sync_thread = threading.Thread(target=sync_loop, daemon=True)
+    sync_thread.start()
+    log.info(f"Patreon sync running every {PATREON_SYNC_INTERVAL}s "
+             f"for tier '{PATREON_TIER_NAME}'")
+else:
+    log.info("No PATREON_ACCESS_TOKEN set — sync disabled")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
