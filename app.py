@@ -293,9 +293,11 @@ def index():
 
 
 # ─── Run ───────────────────────────────────────────────────────────
+init_db()
+
 if __name__ == "__main__":
-    init_db()
-    print("\n  Video Gate is running!")
-    print("  Admin panel: http://localhost:5000/admin")
-    print("  Default password: changeme\n")
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    print(f"\n  Video Gate is running on port {port}!")
+    print(f"  Admin panel: http://localhost:{port}/admin\n")
+    app.run(host="0.0.0.0", port=port, debug=debug)
