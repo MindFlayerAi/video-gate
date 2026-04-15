@@ -143,6 +143,22 @@ def close_db(exc):
         db.close()
 
 
+def fetch_all_dicts(db, sql, params=()):
+    """Run a SELECT and return results as a list of dicts. Works with both
+    sqlite3 (with or without row_factory) and libsql (which returns tuples)."""
+    cur = db.execute(sql, params)
+    cols = [c[0] for c in cur.description] if cur.description else []
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def fetch_one_dict(db, sql, params=()):
+    """Run a SELECT and return the first result as a dict, or None."""
+    cur = db.execute(sql, params)
+    cols = [c[0] for c in cur.description] if cur.description else []
+    row = cur.fetchone()
+    return dict(zip(cols, row)) if row else None
+
+
 def init_db():
     db = db_connect()
     db.execute("""
@@ -221,8 +237,8 @@ def admin_panel():
 @admin_required
 def list_emails():
     db = get_db()
-    rows = db.execute("SELECT id, email, source, added_at FROM emails ORDER BY added_at DESC").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(fetch_all_dicts(db,
+        "SELECT id, email, source, added_at FROM emails ORDER BY added_at DESC"))
 
 
 @app.route("/api/emails", methods=["POST"])
@@ -255,8 +271,8 @@ def delete_email(email_id):
 @admin_required
 def list_videos():
     db = get_db()
-    rows = db.execute("SELECT id, title, url, added_at FROM videos ORDER BY added_at DESC").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(fetch_all_dicts(db,
+        "SELECT id, title, url, added_at FROM videos ORDER BY added_at DESC"))
 
 
 @app.route("/api/videos", methods=["POST"])
@@ -342,10 +358,10 @@ def check_logo():
 @app.route("/gate/<video_id>")
 def gate_page(video_id):
     db = get_db()
-    video = db.execute("SELECT id, title FROM videos WHERE id = ?", (video_id,)).fetchone()
+    video = fetch_one_dict(db, "SELECT id, title FROM videos WHERE id = ?", (video_id,))
     if not video:
         return render_template("404.html"), 404
-    return render_template("gate.html", video=dict(video), logo_url=LOGO_URL)
+    return render_template("gate.html", video=video, logo_url=LOGO_URL)
 
 
 @app.route("/api/verify", methods=["POST"])
@@ -358,12 +374,12 @@ def verify_email():
 
     db = get_db()
     # Check email exists
-    row = db.execute("SELECT id FROM emails WHERE email = ?", (email,)).fetchone()
+    row = fetch_one_dict(db, "SELECT id FROM emails WHERE email = ?", (email,))
     if not row:
         return jsonify({"granted": False})
 
     # Check video exists and return URL
-    video = db.execute("SELECT url FROM videos WHERE id = ?", (video_id,)).fetchone()
+    video = fetch_one_dict(db, "SELECT url FROM videos WHERE id = ?", (video_id,))
     if not video:
         return jsonify({"error": "Video not found"}), 404
 
@@ -500,14 +516,11 @@ def sync_patreon_emails():
         log.info(f"Found {len(patron_emails)} active patron(s) in '{PATREON_TIER_NAME}' tier")
 
         db = db_connect()
-        try:
-            db.row_factory = sqlite3.Row
-        except Exception:
-            pass
 
-        # Get current patreon-synced emails
+        # Get current patreon-synced emails (use position-based access to
+        # work with both sqlite3 tuples and libsql tuples)
         existing = set(
-            row["email"] for row in
+            row[0] for row in
             db.execute("SELECT email FROM emails WHERE source = 'patreon'").fetchall()
         )
 
