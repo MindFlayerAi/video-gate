@@ -68,9 +68,17 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "svg", "webp"}
 
 # ─── Turso (libSQL) config ─────────────────────────────────────────
-TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+# .strip() guards against trailing whitespace/newlines from copy-paste
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip().strip('"').strip("'")
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip().strip('"').strip("'")
 USE_TURSO = bool(TURSO_DATABASE_URL and HAS_LIBSQL)
+
+# Debug logging so we can see what env vars the app actually received
+print(f"[turso] HAS_LIBSQL={HAS_LIBSQL} USE_TURSO={USE_TURSO} "
+      f"url_len={len(TURSO_DATABASE_URL)} token_len={len(TURSO_AUTH_TOKEN)}")
+if TURSO_DATABASE_URL:
+    print(f"[turso] url_starts={TURSO_DATABASE_URL[:15]!r} "
+          f"url_ends={TURSO_DATABASE_URL[-15:]!r}")
 
 def _exc_types(name):
     """Build a tuple of exception classes (sqlite3 + libsql) for broad catch."""
