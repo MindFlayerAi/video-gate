@@ -32,6 +32,13 @@ from flask import (
     session, url_for, g
 )
 
+try:
+    import libsql_experimental as libsql
+    HAS_LIBSQL = True
+except ImportError:
+    libsql = None
+    HAS_LIBSQL = False
+
 # ─── Load .env file ───────────────────────────────────────────────
 # Reads key=value pairs from .env so you don't have to set
 # environment variables manually. Just edit the .env file.
@@ -60,12 +67,46 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "svg", "webp"}
 
+# ─── Turso (libSQL) config ─────────────────────────────────────────
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+USE_TURSO = bool(TURSO_DATABASE_URL and HAS_LIBSQL)
+
+def _exc_types(name):
+    """Build a tuple of exception classes (sqlite3 + libsql) for broad catch."""
+    types = [getattr(sqlite3, name)]
+    if HAS_LIBSQL:
+        libsql_exc = getattr(libsql, name, None)
+        if libsql_exc is not None:
+            types.append(libsql_exc)
+    return tuple(types)
+
+IntegrityError = _exc_types("IntegrityError")
+OperationalError = _exc_types("OperationalError")
+
+
+def db_connect():
+    """Open a new DB connection. Uses Turso (libSQL embedded replica) when
+    TURSO_DATABASE_URL is set; otherwise falls back to local SQLite."""
+    if USE_TURSO:
+        conn = libsql.connect(
+            DATABASE,
+            sync_url=TURSO_DATABASE_URL,
+            auth_token=TURSO_AUTH_TOKEN,
+        )
+        conn.sync()
+        return conn
+    return sqlite3.connect(DATABASE)
+
 
 # ─── Database helpers ──────────────────────────────────────────────
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DATABASE)
-        g.db.row_factory = sqlite3.Row
+        g.db = db_connect()
+        try:
+            g.db.row_factory = sqlite3.Row
+        except Exception:
+            pass  # libsql embedded replica may not support row_factory
     return g.db
 
 
@@ -77,7 +118,7 @@ def close_db(exc):
 
 
 def init_db():
-    db = sqlite3.connect(DATABASE)
+    db = db_connect()
     db.execute("""
         CREATE TABLE IF NOT EXISTS emails (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +138,7 @@ def init_db():
     # Add source column if upgrading from older version
     try:
         db.execute("ALTER TABLE emails ADD COLUMN source TEXT DEFAULT 'manual'")
-    except sqlite3.OperationalError:
+    except OperationalError:
         pass  # column already exists
     db.commit()
     db.close()
@@ -166,7 +207,7 @@ def add_email():
     try:
         db.execute("INSERT INTO emails (email) VALUES (?)", (email,))
         db.commit()
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         return jsonify({"error": "Email already exists"}), 409
     return jsonify({"ok": True})
 
@@ -429,8 +470,11 @@ def sync_patreon_emails():
         patron_emails = fetch_patron_emails(campaign_id, tier_ids)
         log.info(f"Found {len(patron_emails)} active patron(s) in '{PATREON_TIER_NAME}' tier")
 
-        db = sqlite3.connect(DATABASE)
-        db.row_factory = sqlite3.Row
+        db = db_connect()
+        try:
+            db.row_factory = sqlite3.Row
+        except Exception:
+            pass
 
         # Get current patreon-synced emails
         existing = set(
@@ -448,7 +492,7 @@ def sync_patreon_emails():
                         (email,)
                     )
                     added += 1
-                except sqlite3.IntegrityError:
+                except IntegrityError:
                     # Email exists as manual — leave it alone
                     pass
 
