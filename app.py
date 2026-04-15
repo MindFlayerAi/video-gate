@@ -87,14 +87,27 @@ OperationalError = _exc_types("OperationalError")
 
 def db_connect():
     """Open a new DB connection. Uses Turso (libSQL embedded replica) when
-    TURSO_DATABASE_URL is set; otherwise falls back to local SQLite."""
+    TURSO_DATABASE_URL is set; otherwise falls back to local SQLite.
+
+    For embedded replica mode, we wrap .commit() so it also calls .sync()
+    to push writes to the Turso remote. Otherwise writes stay local and
+    never propagate to Turso."""
     if USE_TURSO:
         conn = libsql.connect(
             DATABASE,
             sync_url=TURSO_DATABASE_URL,
             auth_token=TURSO_AUTH_TOKEN,
         )
-        conn.sync()
+        conn.sync()  # pull latest from remote
+        _orig_commit = conn.commit
+        def _commit_and_sync():
+            _orig_commit()
+            try:
+                conn.sync()
+            except Exception as e:
+                log_sync = logging.getLogger("turso-sync")
+                log_sync.error(f"Turso sync after commit failed: {e}")
+        conn.commit = _commit_and_sync
         return conn
     return sqlite3.connect(DATABASE)
 
