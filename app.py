@@ -161,11 +161,14 @@ def init_db():
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # Add source column if upgrading from older version
+    # Add source column if upgrading from older version.
+    # Catch broadly — different backends raise different errors for
+    # "column already exists" (sqlite3.OperationalError, libsql
+    # OperationalError, or Hrana/Turso ValueError).
     try:
         db.execute("ALTER TABLE emails ADD COLUMN source TEXT DEFAULT 'manual'")
-    except OperationalError:
-        pass  # column already exists
+    except Exception:
+        pass  # column already exists — expected on all but first run
     db.commit()
     db.close()
 
