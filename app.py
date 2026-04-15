@@ -96,6 +96,13 @@ IntegrityError = _exc_types("IntegrityError")
 OperationalError = _exc_types("OperationalError")
 
 
+# Global lock to serialize all Turso access — libsql-experimental's Rust
+# runtime deadlocks when multiple threads hit it concurrently (Patreon
+# sync thread + HTTP worker threads). Only one thread holds the DB at a
+# time. Not a bottleneck for this low-traffic app.
+db_lock = threading.Lock()
+
+
 def db_connect():
     """Open a new DB connection. Tries Turso in pure-remote mode when
     TURSO_DATABASE_URL is set; if that fails for any reason, logs the
@@ -128,11 +135,16 @@ def db_connect():
 # ─── Database helpers ──────────────────────────────────────────────
 def get_db():
     if "db" not in g:
+        # Acquire the global lock for the duration of this request so
+        # concurrent threads (e.g. Patreon sync) can't hit Turso at the
+        # same time and trigger the libsql Rust-level deadlock.
+        db_lock.acquire()
+        g.db_locked = True
         g.db = db_connect()
         try:
             g.db.row_factory = sqlite3.Row
         except Exception:
-            pass  # libsql embedded replica may not support row_factory
+            pass  # libsql doesn't support row_factory
     return g.db
 
 
@@ -140,7 +152,15 @@ def get_db():
 def close_db(exc):
     db = g.pop("db", None)
     if db:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
+    if g.pop("db_locked", False):
+        try:
+            db_lock.release()
+        except RuntimeError:
+            pass
 
 
 def fetch_all_dicts(db, sql, params=()):
@@ -515,41 +535,43 @@ def sync_patreon_emails():
         patron_emails = fetch_patron_emails(campaign_id, tier_ids)
         log.info(f"Found {len(patron_emails)} active patron(s) in '{PATREON_TIER_NAME}' tier")
 
-        db = db_connect()
-
-        # Get current patreon-synced emails (use position-based access to
-        # work with both sqlite3 tuples and libsql tuples)
-        existing = set(
-            row[0] for row in
-            db.execute("SELECT email FROM emails WHERE source = 'patreon'").fetchall()
-        )
-
-        # Add new patrons
-        added = 0
-        for email in patron_emails:
-            if email not in existing:
-                try:
-                    db.execute(
-                        "INSERT INTO emails (email, source) VALUES (?, 'patreon')",
-                        (email,)
-                    )
-                    added += 1
-                except IntegrityError:
-                    # Email exists as manual — leave it alone
-                    pass
-
-        # Remove former patrons (only patreon-sourced, not manual)
-        removed = 0
-        for email in existing:
-            if email not in patron_emails:
-                db.execute(
-                    "DELETE FROM emails WHERE email = ? AND source = 'patreon'",
-                    (email,)
+        # Hold the global DB lock for all Turso work so we don't race
+        # against HTTP worker threads and trigger the libsql deadlock.
+        with db_lock:
+            db = db_connect()
+            try:
+                existing = set(
+                    row[0] for row in
+                    db.execute("SELECT email FROM emails WHERE source = 'patreon'").fetchall()
                 )
-                removed += 1
 
-        db.commit()
-        db.close()
+                added = 0
+                for email in patron_emails:
+                    if email not in existing:
+                        try:
+                            db.execute(
+                                "INSERT INTO emails (email, source) VALUES (?, 'patreon')",
+                                (email,)
+                            )
+                            added += 1
+                        except IntegrityError:
+                            pass
+
+                removed = 0
+                for email in existing:
+                    if email not in patron_emails:
+                        db.execute(
+                            "DELETE FROM emails WHERE email = ? AND source = 'patreon'",
+                            (email,)
+                        )
+                        removed += 1
+
+                db.commit()
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
         last_sync_status = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
