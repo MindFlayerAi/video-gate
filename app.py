@@ -97,14 +97,31 @@ OperationalError = _exc_types("OperationalError")
 
 
 def db_connect():
-    """Open a new DB connection. In production we use Turso in pure-remote
-    mode — every query goes directly to the Turso server over HTTP, no
-    local file, no sync() bookkeeping. Falls back to local SQLite when
-    TURSO_DATABASE_URL is not set (for local dev)."""
+    """Open a new DB connection. Tries Turso in pure-remote mode when
+    TURSO_DATABASE_URL is set; if that fails for any reason, logs the
+    error and falls back to local SQLite so the app never fails to boot."""
     if USE_TURSO:
-        # Pure remote: pass the libsql:// URL as the database argument.
-        # No sync_url means no embedded replica — writes go straight to Turso.
-        return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+        try:
+            return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+        except Exception as e:
+            print(f"[turso] pure-remote connect failed: {type(e).__name__}: {e}",
+                  flush=True)
+            # Try embedded replica as a second attempt
+            try:
+                conn = libsql.connect(
+                    DATABASE,
+                    sync_url=TURSO_DATABASE_URL,
+                    auth_token=TURSO_AUTH_TOKEN,
+                )
+                conn.sync()
+                print("[turso] fell back to embedded-replica mode", flush=True)
+                return conn
+            except Exception as e2:
+                print(f"[turso] embedded-replica connect also failed: "
+                      f"{type(e2).__name__}: {e2}",
+                      flush=True)
+                print("[turso] FALLING BACK TO LOCAL SQLITE — data will NOT persist",
+                      flush=True)
     return sqlite3.connect(DATABASE)
 
 
