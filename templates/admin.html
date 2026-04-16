@@ -171,6 +171,18 @@
       <input type="url" id="v-url" placeholder="Video URL (Telegram, Proton, YouTube — any link)">
       <button class="btn btn-primary" onclick="addVideo()">+ Add Video</button>
     </div>
+
+    <!-- Turso backup card -->
+    <div class="form-card" id="turso-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px">
+        <div>
+          <h3 style="margin-bottom:4px">Turso Backup</h3>
+          <p id="turso-status" style="font-size:13px; color:var(--text-dim); margin:0">Checking...</p>
+        </div>
+        <button class="btn btn-primary" onclick="commitTurso()" id="turso-btn" style="white-space:nowrap">Commit to Turso</button>
+      </div>
+    </div>
+
     <div id="video-list"></div>
     <div class="info" id="video-info" style="display:none">
       <h4>How to use</h4>
@@ -365,6 +377,49 @@ async function syncNow() {
   }
 }
 
+// ═══ TURSO BACKUP ═══
+async function loadTursoStatus() {
+  try {
+    const res = await fetch('/api/turso/status');
+    const s = await res.json();
+    const el = document.getElementById('turso-status');
+    const btn = document.getElementById('turso-btn');
+    if (!s.enabled) {
+      el.textContent = 'Not configured — set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.';
+      btn.disabled = true;
+      btn.style.opacity = '.5';
+      return;
+    }
+    if (s.status === 'never') {
+      el.textContent = 'Never committed yet — click to back up now.';
+    } else if (s.status === 'ok') {
+      el.innerHTML = `Last commit: <strong style="color:var(--success)">${s.time}</strong> — ${esc(s.detail)}`;
+    } else {
+      el.innerHTML = `Last commit: <strong style="color:var(--danger)">Error</strong> — ${esc(s.detail)}`;
+    }
+  } catch(e) {}
+}
+
+async function commitTurso() {
+  const btn = document.getElementById('turso-btn');
+  btn.disabled = true;
+  btn.textContent = 'Committing...';
+  try {
+    const res = await fetch('/api/turso/commit', {method:'POST'});
+    const data = await res.json();
+    if (res.ok) {
+      flash('Committed to Turso');
+    } else {
+      flash('Commit failed: ' + (data.error || 'unknown'));
+    }
+  } catch(e) {
+    flash('Commit failed');
+  }
+  await loadTursoStatus();
+  btn.disabled = false;
+  btn.textContent = 'Commit to Turso';
+}
+
 // ── Escape HTML ──
 function esc(s) {
   const d = document.createElement('div');
@@ -380,6 +435,7 @@ document.getElementById('e-email').addEventListener('keydown', e => { if(e.key==
 loadVideos();
 loadEmails();
 loadSyncStatus();
+loadTursoStatus();
 </script>
 </body>
 </html>

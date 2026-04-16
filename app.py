@@ -32,13 +32,6 @@ from flask import (
     session, url_for, g
 )
 
-try:
-    import libsql_experimental as libsql
-    HAS_LIBSQL = True
-except ImportError:
-    libsql = None
-    HAS_LIBSQL = False
-
 # ─── Load .env file ───────────────────────────────────────────────
 # Reads key=value pairs from .env so you don't have to set
 # environment variables manually. Just edit the .env file.
@@ -62,89 +55,19 @@ LOGO_URL = os.environ.get("LOGO_URL", "")
 PATREON_ACCESS_TOKEN = os.environ.get("PATREON_ACCESS_TOKEN", "")
 PATREON_TIER_NAME = os.environ.get("PATREON_TIER_NAME", "Premium")
 PATREON_SYNC_INTERVAL = int(os.environ.get("PATREON_SYNC_INTERVAL", "600"))  # seconds
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
 DATABASE = os.path.join(os.path.dirname(__file__), "gate.db")
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "svg", "webp"}
 
-# ─── Turso (libSQL) config ─────────────────────────────────────────
-# .strip() guards against trailing whitespace/newlines from copy-paste
-TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip().strip('"').strip("'")
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip().strip('"').strip("'")
-USE_TURSO = bool(TURSO_DATABASE_URL and HAS_LIBSQL)
-
-# Debug logging so we can see what env vars the app actually received.
-# Use flush=True so the lines appear immediately in Render's captured stdout.
-print(f"[turso] HAS_LIBSQL={HAS_LIBSQL} USE_TURSO={USE_TURSO} "
-      f"url_len={len(TURSO_DATABASE_URL)} token_len={len(TURSO_AUTH_TOKEN)}",
-      flush=True)
-if TURSO_DATABASE_URL:
-    print(f"[turso] url_starts={TURSO_DATABASE_URL[:15]!r} "
-          f"url_ends={TURSO_DATABASE_URL[-15:]!r}",
-          flush=True)
-
-def _exc_types(name):
-    """Build a tuple of exception classes (sqlite3 + libsql) for broad catch."""
-    types = [getattr(sqlite3, name)]
-    if HAS_LIBSQL:
-        libsql_exc = getattr(libsql, name, None)
-        if libsql_exc is not None:
-            types.append(libsql_exc)
-    return tuple(types)
-
-IntegrityError = _exc_types("IntegrityError")
-OperationalError = _exc_types("OperationalError")
-
-
-# Global lock to serialize all Turso access — libsql-experimental's Rust
-# runtime deadlocks when multiple threads hit it concurrently (Patreon
-# sync thread + HTTP worker threads). Only one thread holds the DB at a
-# time. Not a bottleneck for this low-traffic app.
-db_lock = threading.Lock()
-
-
-def db_connect():
-    """Open a new DB connection. Tries Turso in pure-remote mode when
-    TURSO_DATABASE_URL is set; if that fails for any reason, logs the
-    error and falls back to local SQLite so the app never fails to boot."""
-    if USE_TURSO:
-        try:
-            return libsql.connect(database=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-        except Exception as e:
-            print(f"[turso] pure-remote connect failed: {type(e).__name__}: {e}",
-                  flush=True)
-            # Try embedded replica as a second attempt
-            try:
-                conn = libsql.connect(
-                    DATABASE,
-                    sync_url=TURSO_DATABASE_URL,
-                    auth_token=TURSO_AUTH_TOKEN,
-                )
-                conn.sync()
-                print("[turso] fell back to embedded-replica mode", flush=True)
-                return conn
-            except Exception as e2:
-                print(f"[turso] embedded-replica connect also failed: "
-                      f"{type(e2).__name__}: {e2}",
-                      flush=True)
-                print("[turso] FALLING BACK TO LOCAL SQLITE — data will NOT persist",
-                      flush=True)
-    return sqlite3.connect(DATABASE)
-
 
 # ─── Database helpers ──────────────────────────────────────────────
 def get_db():
     if "db" not in g:
-        # Acquire the global lock for the duration of this request so
-        # concurrent threads (e.g. Patreon sync) can't hit Turso at the
-        # same time and trigger the libsql Rust-level deadlock.
-        db_lock.acquire()
-        g.db_locked = True
-        g.db = db_connect()
-        try:
-            g.db.row_factory = sqlite3.Row
-        except Exception:
-            pass  # libsql doesn't support row_factory
+        g.db = sqlite3.connect(DATABASE)
+        g.db.row_factory = sqlite3.Row
     return g.db
 
 
@@ -152,35 +75,11 @@ def get_db():
 def close_db(exc):
     db = g.pop("db", None)
     if db:
-        try:
-            db.close()
-        except Exception:
-            pass
-    if g.pop("db_locked", False):
-        try:
-            db_lock.release()
-        except RuntimeError:
-            pass
-
-
-def fetch_all_dicts(db, sql, params=()):
-    """Run a SELECT and return results as a list of dicts. Works with both
-    sqlite3 (with or without row_factory) and libsql (which returns tuples)."""
-    cur = db.execute(sql, params)
-    cols = [c[0] for c in cur.description] if cur.description else []
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-def fetch_one_dict(db, sql, params=()):
-    """Run a SELECT and return the first result as a dict, or None."""
-    cur = db.execute(sql, params)
-    cols = [c[0] for c in cur.description] if cur.description else []
-    row = cur.fetchone()
-    return dict(zip(cols, row)) if row else None
+        db.close()
 
 
 def init_db():
-    db = db_connect()
+    db = sqlite3.connect(DATABASE)
     db.execute("""
         CREATE TABLE IF NOT EXISTS emails (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,16 +96,266 @@ def init_db():
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # Add source column if upgrading from older version.
-    # Catch broadly — different backends raise different errors for
-    # "column already exists" (sqlite3.OperationalError, libsql
-    # OperationalError, or Hrana/Turso ValueError).
+    # Add source column if upgrading from older version
     try:
         db.execute("ALTER TABLE emails ADD COLUMN source TEXT DEFAULT 'manual'")
-    except Exception:
-        pass  # column already exists — expected on all but first run
+    except sqlite3.OperationalError:
+        pass  # column already exists
     db.commit()
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Turso backup/restore layer (plain HTTP — no libsql library)
+#
+# Uses Turso's Hrana /v2/pipeline HTTP endpoint to push/pull data.
+# Local sqlite3 is the source of truth while the app is running;
+# Turso is a persistent backup so data survives Render redeploys.
+# ═══════════════════════════════════════════════════════════════════
+turso_log = logging.getLogger("turso")
+last_turso_status = {"time": None, "status": "never", "detail": ""}
+_turso_lock = threading.Lock()
+
+
+def _turso_endpoint():
+    """Convert libsql://host → https://host/v2/pipeline."""
+    if not TURSO_DATABASE_URL:
+        return None
+    url = TURSO_DATABASE_URL
+    if url.startswith("libsql://"):
+        url = "https://" + url[len("libsql://"):]
+    elif url.startswith("wss://"):
+        url = "https://" + url[len("wss://"):]
+    elif url.startswith("ws://"):
+        url = "http://" + url[len("ws://"):]
+    return url.rstrip("/") + "/v2/pipeline"
+
+
+def turso_enabled():
+    return bool(TURSO_DATABASE_URL and TURSO_AUTH_TOKEN)
+
+
+def _py_to_hrana(v):
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, bool):
+        return {"type": "integer", "value": "1" if v else "0"}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": v}
+    if isinstance(v, (bytes, bytearray)):
+        import base64
+        return {"type": "blob", "base64": base64.b64encode(bytes(v)).decode()}
+    return {"type": "text", "value": str(v)}
+
+
+def _hrana_to_py(cell):
+    t = cell.get("type")
+    if t == "null":
+        return None
+    if t == "integer":
+        try:
+            return int(cell.get("value"))
+        except (TypeError, ValueError):
+            return cell.get("value")
+    if t == "float":
+        return float(cell.get("value"))
+    if t == "blob":
+        import base64
+        return base64.b64decode(cell.get("base64", ""))
+    return cell.get("value")
+
+
+def turso_exec(statements, timeout=30):
+    """
+    Run a list of (sql, args) tuples as one pipeline.
+    Returns a list of result dicts: [{cols:[...], rows:[[...], ...]}, ...].
+    Raises on HTTP or statement error.
+    """
+    endpoint = _turso_endpoint()
+    if not endpoint:
+        raise RuntimeError("TURSO_DATABASE_URL not set")
+    requests_ = []
+    for sql, args in statements:
+        requests_.append({
+            "type": "execute",
+            "stmt": {
+                "sql": sql,
+                "args": [_py_to_hrana(a) for a in (args or [])],
+            },
+        })
+    requests_.append({"type": "close"})
+    r = http_requests.post(
+        endpoint,
+        headers={"Authorization": f"Bearer {TURSO_AUTH_TOKEN}"},
+        json={"requests": requests_},
+        timeout=timeout,
+    )
+    r.raise_for_status()
+    data = r.json()
+    results = []
+    for i, res in enumerate(data.get("results", [])):
+        if res.get("type") == "error":
+            err = res.get("error", {})
+            raise RuntimeError(f"Turso error on stmt {i}: {err.get('message', err)}")
+        if res.get("type") == "ok":
+            resp = res.get("response", {})
+            if resp.get("type") == "execute":
+                result = resp.get("result", {})
+                cols = [c.get("name") for c in result.get("cols", [])]
+                rows = [
+                    [_hrana_to_py(cell) for cell in row]
+                    for row in result.get("rows", [])
+                ]
+                results.append({"cols": cols, "rows": rows})
+            else:
+                results.append(None)
+    return results
+
+
+def _ensure_turso_schema():
+    turso_exec([
+        ("""CREATE TABLE IF NOT EXISTS emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            source TEXT DEFAULT 'manual',
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""", []),
+        ("""CREATE TABLE IF NOT EXISTS videos (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""", []),
+    ])
+
+
+def turso_backup():
+    """Push local emails + videos to Turso (full replace)."""
+    global last_turso_status
+    if not turso_enabled():
+        return False
+    with _turso_lock:
+        try:
+            db = sqlite3.connect(DATABASE)
+            db.row_factory = sqlite3.Row
+            emails = db.execute(
+                "SELECT email, source, added_at FROM emails"
+            ).fetchall()
+            videos = db.execute(
+                "SELECT id, title, url, added_at FROM videos"
+            ).fetchall()
+            db.close()
+
+            _ensure_turso_schema()
+
+            stmts = [
+                ("DELETE FROM emails", []),
+                ("DELETE FROM videos", []),
+            ]
+            for e in emails:
+                stmts.append((
+                    "INSERT INTO emails (email, source, added_at) VALUES (?, ?, ?)",
+                    [e["email"], e["source"] or "manual", e["added_at"]],
+                ))
+            for v in videos:
+                stmts.append((
+                    "INSERT INTO videos (id, title, url, added_at) VALUES (?, ?, ?, ?)",
+                    [v["id"], v["title"], v["url"], v["added_at"]],
+                ))
+            # Run in chunks to stay under pipeline size limits
+            CHUNK = 100
+            # First chunk carries the two DELETEs
+            head, tail = stmts[:2], stmts[2:]
+            turso_exec(head)
+            for i in range(0, len(tail), CHUNK):
+                turso_exec(tail[i:i + CHUNK])
+
+            last_turso_status = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                "status": "ok",
+                "detail": f"Backed up {len(emails)} email(s), {len(videos)} video(s)",
+            }
+            turso_log.info(last_turso_status["detail"])
+            return True
+        except Exception as e:
+            last_turso_status = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                "status": "error",
+                "detail": str(e),
+            }
+            turso_log.error(f"Turso backup failed: {e}")
+            return False
+
+
+def turso_restore():
+    """
+    Pull data from Turso into local gate.db.
+    Only restores if Turso has at least one row (so a fresh Turso
+    doesn't wipe a populated local DB).
+    """
+    global last_turso_status
+    if not turso_enabled():
+        return False
+    with _turso_lock:
+        try:
+            _ensure_turso_schema()
+            results = turso_exec([
+                ("SELECT email, source, added_at FROM emails", []),
+                ("SELECT id, title, url, added_at FROM videos", []),
+            ])
+            email_rows = results[0]["rows"] if results and results[0] else []
+            video_rows = results[1]["rows"] if len(results) > 1 and results[1] else []
+
+            if not email_rows and not video_rows:
+                turso_log.info("Turso is empty — skipping restore")
+                last_turso_status = {
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                    "status": "ok",
+                    "detail": "Turso empty, nothing to restore",
+                }
+                return False
+
+            db = sqlite3.connect(DATABASE)
+            db.execute("DELETE FROM emails")
+            db.execute("DELETE FROM videos")
+            for row in email_rows:
+                email, source, added_at = row[0], row[1], row[2]
+                try:
+                    db.execute(
+                        "INSERT INTO emails (email, source, added_at) VALUES (?, ?, ?)",
+                        (email, source or "manual", added_at),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+            for row in video_rows:
+                vid, title, url, added_at = row[0], row[1], row[2], row[3]
+                try:
+                    db.execute(
+                        "INSERT INTO videos (id, title, url, added_at) VALUES (?, ?, ?, ?)",
+                        (vid, title, url, added_at),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+            db.commit()
+            db.close()
+
+            last_turso_status = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                "status": "ok",
+                "detail": f"Restored {len(email_rows)} email(s), {len(video_rows)} video(s)",
+            }
+            turso_log.info(last_turso_status["detail"])
+            return True
+        except Exception as e:
+            last_turso_status = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                "status": "error",
+                "detail": str(e),
+            }
+            turso_log.error(f"Turso restore failed: {e}")
+            return False
 
 
 # ─── Auth decorator ────────────────────────────────────────────────
@@ -257,8 +406,8 @@ def admin_panel():
 @admin_required
 def list_emails():
     db = get_db()
-    return jsonify(fetch_all_dicts(db,
-        "SELECT id, email, source, added_at FROM emails ORDER BY added_at DESC"))
+    rows = db.execute("SELECT id, email, source, added_at FROM emails ORDER BY added_at DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/emails", methods=["POST"])
@@ -272,7 +421,7 @@ def add_email():
     try:
         db.execute("INSERT INTO emails (email) VALUES (?)", (email,))
         db.commit()
-    except IntegrityError:
+    except sqlite3.IntegrityError:
         return jsonify({"error": "Email already exists"}), 409
     return jsonify({"ok": True})
 
@@ -291,8 +440,8 @@ def delete_email(email_id):
 @admin_required
 def list_videos():
     db = get_db()
-    return jsonify(fetch_all_dicts(db,
-        "SELECT id, title, url, added_at FROM videos ORDER BY added_at DESC"))
+    rows = db.execute("SELECT id, title, url, added_at FROM videos ORDER BY added_at DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/videos", methods=["POST"])
@@ -378,10 +527,10 @@ def check_logo():
 @app.route("/gate/<video_id>")
 def gate_page(video_id):
     db = get_db()
-    video = fetch_one_dict(db, "SELECT id, title FROM videos WHERE id = ?", (video_id,))
+    video = db.execute("SELECT id, title FROM videos WHERE id = ?", (video_id,)).fetchone()
     if not video:
         return render_template("404.html"), 404
-    return render_template("gate.html", video=video, logo_url=LOGO_URL)
+    return render_template("gate.html", video=dict(video), logo_url=LOGO_URL)
 
 
 @app.route("/api/verify", methods=["POST"])
@@ -394,12 +543,12 @@ def verify_email():
 
     db = get_db()
     # Check email exists
-    row = fetch_one_dict(db, "SELECT id FROM emails WHERE email = ?", (email,))
+    row = db.execute("SELECT id FROM emails WHERE email = ?", (email,)).fetchone()
     if not row:
         return jsonify({"granted": False})
 
     # Check video exists and return URL
-    video = fetch_one_dict(db, "SELECT url FROM videos WHERE id = ?", (video_id,))
+    video = db.execute("SELECT url FROM videos WHERE id = ?", (video_id,)).fetchone()
     if not video:
         return jsonify({"error": "Video not found"}), 404
 
@@ -535,43 +684,41 @@ def sync_patreon_emails():
         patron_emails = fetch_patron_emails(campaign_id, tier_ids)
         log.info(f"Found {len(patron_emails)} active patron(s) in '{PATREON_TIER_NAME}' tier")
 
-        # Hold the global DB lock for all Turso work so we don't race
-        # against HTTP worker threads and trigger the libsql deadlock.
-        with db_lock:
-            db = db_connect()
-            try:
-                existing = set(
-                    row[0] for row in
-                    db.execute("SELECT email FROM emails WHERE source = 'patreon'").fetchall()
-                )
+        db = sqlite3.connect(DATABASE)
+        db.row_factory = sqlite3.Row
 
-                added = 0
-                for email in patron_emails:
-                    if email not in existing:
-                        try:
-                            db.execute(
-                                "INSERT INTO emails (email, source) VALUES (?, 'patreon')",
-                                (email,)
-                            )
-                            added += 1
-                        except IntegrityError:
-                            pass
+        # Get current patreon-synced emails
+        existing = set(
+            row["email"] for row in
+            db.execute("SELECT email FROM emails WHERE source = 'patreon'").fetchall()
+        )
 
-                removed = 0
-                for email in existing:
-                    if email not in patron_emails:
-                        db.execute(
-                            "DELETE FROM emails WHERE email = ? AND source = 'patreon'",
-                            (email,)
-                        )
-                        removed += 1
-
-                db.commit()
-            finally:
+        # Add new patrons
+        added = 0
+        for email in patron_emails:
+            if email not in existing:
                 try:
-                    db.close()
-                except Exception:
+                    db.execute(
+                        "INSERT INTO emails (email, source) VALUES (?, 'patreon')",
+                        (email,)
+                    )
+                    added += 1
+                except sqlite3.IntegrityError:
+                    # Email exists as manual — leave it alone
                     pass
+
+        # Remove former patrons (only patreon-sourced, not manual)
+        removed = 0
+        for email in existing:
+            if email not in patron_emails:
+                db.execute(
+                    "DELETE FROM emails WHERE email = ? AND source = 'patreon'",
+                    (email,)
+                )
+                removed += 1
+
+        db.commit()
+        db.close()
 
         last_sync_status = {
             "time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
@@ -581,6 +728,10 @@ def sync_patreon_emails():
         }
         log.info(f"Sync complete: {added} added, {removed} removed, "
                 f"{len(patron_emails)} total patrons")
+
+        # Auto-backup to Turso after each successful Patreon sync
+        if turso_enabled():
+            turso_backup()
 
     except Exception as e:
         last_sync_status = {
@@ -617,8 +768,48 @@ def sync_now():
     return jsonify({"ok": True, "message": "Sync started"})
 
 
+# ── API: Turso backup/restore ─────────────────────────────────────
+@app.route("/api/turso/status")
+@admin_required
+def turso_status():
+    return jsonify({
+        "enabled": turso_enabled(),
+        **last_turso_status,
+    })
+
+
+@app.route("/api/turso/commit", methods=["POST"])
+@admin_required
+def turso_commit():
+    if not turso_enabled():
+        return jsonify({"error": "Turso not configured (set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN)"}), 400
+    ok = turso_backup()
+    if not ok:
+        return jsonify({"error": last_turso_status.get("detail") or "Backup failed"}), 500
+    return jsonify({"ok": True, "detail": last_turso_status.get("detail", "")})
+
+
+@app.route("/api/turso/restore", methods=["POST"])
+@admin_required
+def turso_restore_endpoint():
+    if not turso_enabled():
+        return jsonify({"error": "Turso not configured"}), 400
+    ok = turso_restore()
+    return jsonify({"ok": ok, "detail": last_turso_status.get("detail", "")})
+
+
 # ─── Run ───────────────────────────────────────────────────────────
 init_db()
+
+# Restore from Turso at startup (recovers data after Render redeploys,
+# which wipe the ephemeral filesystem and thus gate.db).
+if turso_enabled():
+    try:
+        turso_restore()
+    except Exception as e:
+        turso_log.error(f"Startup restore failed (continuing): {e}")
+else:
+    turso_log.info("Turso not configured — backup/restore disabled")
 
 # Start Patreon sync background thread
 if PATREON_ACCESS_TOKEN:
