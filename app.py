@@ -743,12 +743,24 @@ def sync_patreon_emails():
         log.error(f"Patreon sync error: {e}")
 
 
-def sync_loop():
-    """Background loop that syncs every PATREON_SYNC_INTERVAL seconds."""
-    while True:
-        if PATREON_ACCESS_TOKEN:
-            sync_patreon_emails()
-        time.sleep(PATREON_SYNC_INTERVAL)
+_last_sync_fire = 0.0
+_sync_fire_lock = threading.Lock()
+
+
+@app.before_request
+def maybe_trigger_sync():
+    """Trigger a Patreon sync in the background if the interval has elapsed.
+    Request-driven rather than a background loop so it survives Gunicorn
+    worker recycling on Render's free tier."""
+    global _last_sync_fire
+    if not PATREON_ACCESS_TOKEN:
+        return
+    now = time.time()
+    with _sync_fire_lock:
+        if now - _last_sync_fire < PATREON_SYNC_INTERVAL:
+            return
+        _last_sync_fire = now
+    threading.Thread(target=sync_patreon_emails, daemon=True).start()
 
 
 # ── API: Sync status & manual trigger ─────────────────────────────
@@ -811,12 +823,12 @@ if turso_enabled():
 else:
     turso_log.info("Turso not configured — backup/restore disabled")
 
-# Start Patreon sync background thread
+# Run one immediate sync at startup, then request-driven every PATREON_SYNC_INTERVAL
 if PATREON_ACCESS_TOKEN:
-    sync_thread = threading.Thread(target=sync_loop, daemon=True)
-    sync_thread.start()
-    log.info(f"Patreon sync running every {PATREON_SYNC_INTERVAL}s "
-             f"for tier '{PATREON_TIER_NAME}'")
+    _t = threading.Thread(target=sync_patreon_emails, daemon=True)
+    _t.start()
+    log.info(f"Patreon sync started (interval {PATREON_SYNC_INTERVAL}s, "
+             f"tier '{PATREON_TIER_NAME}')")
 else:
     log.info("No PATREON_ACCESS_TOKEN set — sync disabled")
 
